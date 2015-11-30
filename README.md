@@ -1,6 +1,6 @@
-![logo](logo.png)
+# ![logo](logo.png)
 
-# Narwhal Proof of Concept
+# Proof of Concept 
 
 ## What is Narwhal?
 
