@@ -1,0 +1,167 @@
+#cloud-config
+
+coreos:
+  etcd2:
+    # generate a new token for each unique cluster from https://discovery.etcd.io/new
+    discovery: #DISCOVERY_URL
+    # multi-region and multi-cloud deployments need to use $public_ipv4
+    advertise-client-urls: http://$private_ipv4:2379
+    initial-advertise-peer-urls: http://$private_ipv4:2380
+    # listen on both the official ports and the legacy ports
+    # legacy ports can be omitted if your application doesn't depend on them
+    listen-client-urls: http://0.0.0.0:2379,http://0.0.0.0:4001
+    listen-peer-urls: http://$private_ipv4:2380,http://$private_ipv4:7001
+    data-dir: /var/lib/etcd2
+  fleet:
+    public-ip: $private_ipv4
+    metadata: control=true,data=true,router=true,etcd=true,bastion=true
+  update:
+    reboot-strategy: "off"
+  units:
+    - name: etcd.service
+      mask: true
+    - name: etcd2.service
+      command: start
+    - name: fleet.service
+      command: start
+    - name: install-kubectl.service
+      command: start
+      content: |
+        [Unit]
+        ConditionPathExists=!/opt/bin/kubectl
+
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/bin/sh -c 'curl -o /opt/bin/kubectl https://kuar.io/linux/kubectl && chmod +x /opt/bin/kubectl'
+    - name: calico-install.service
+      runtime: true
+      command: start
+      content: |
+        [Unit]
+        Description=Installs Calico tools
+        Requires=docker.service
+        [Service]
+        ExecStart=/opt/bin/calico-install
+
+        Restart=always
+        RestartSec=60m
+    - name: docker-tcp.socket
+      command: start
+      enable: true
+      content: |
+        [Unit]
+        Description=Docker Socket for the API
+
+        [Socket]
+        ListenStream=2375
+        Service=docker.service
+        BindIPv6Only=both
+
+        [Install]
+        WantedBy=sockets.target
+    - name: update-engine.service
+      command: stop
+      enable: false
+    - name: docker.service
+      drop-ins:
+      - name: 10-calico-etcd.conf
+        content: |
+          [Service]
+          Environment="DOCKER_OPTS=--cluster-store=etcd://127.0.0.1:2379"
+    - name: increase-nf_conntrack-connections.service
+      command: start
+      content: |
+        [Unit]
+        Description=Increase the number of connections in nf_conntrack. default is 65536
+
+        [Service]
+        Type=oneshot
+        ExecStartPre=/usr/sbin/modprobe nf_conntrack
+        ExecStart=/bin/sh -c "sysctl -w net.netfilter.nf_conntrack_max=262144"
+write_files:
+  - path: /etc/profile.d/nse-function.sh
+    permissions: '0755'
+    content: |
+      function nse() {
+        docker exec -it $1 bash
+      }
+  - path: /opt/bin/calico-install
+    owner: root
+    permissions: 0755
+    content: |
+      #! /usr/bin/bash
+      CALICO_VERSION=$(/usr/bin/etcdctl get /calico/version) >/dev/null 2>&1 || CALICO_VERSION="0.12.0"
+      if [ ! -f /opt/bin/calicoctl ]; then
+        echo "Calico not installed - installing."
+        # Install the `calicoctl` binary
+        wget https://github.com/projectcalico/calico-docker/releases/download/v${CALICO_VERSION}/calicoctl
+        chmod +x calicoctl
+        sudo mv calicoctl /opt/bin
+        # Fetch the calico/node container
+        sudo docker pull calico/node:v${CALICO_VERSION} 
+      else
+        INSTALLED_VERSION=$(/opt/bin/calicoctl version)
+        MATCH=$(echo "${INSTALLED_VERSION}" | grep -c "${CALICO_VERSION}")
+        if [ $MATCH -eq 0 ]; then
+          wget https://github.com/projectcalico/calico-docker/releases/download/v${CALICO_VERSION}/calicoctl
+          chmod +x calicoctl
+          sudo mv calicoctl /opt/bin
+          # Fetch the calico/node container
+          sudo docker pull calico/node:v${CALICO_VERSION} 
+        else
+          echo "OK! you are already uptodate"
+        fi
+      fi
+  - path: /etc/environment_proxy
+    owner: core
+    content: |
+      HTTP_PROXY=
+      HTTPS_PROXY=
+      ALL_PROXY=
+      NO_PROXY=
+      http_proxy=
+      https_proxy=
+      all_proxy=
+      no_proxy=
+  - path: /etc/systemd/coredump.conf
+    content: |
+      [Coredump]
+      Storage=none
+  - path: /opt/bin/wupiao
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      # [w]ait [u]ntil [p]ort [i]s [a]ctually [o]pen
+      [ -n "$1" ] && \
+        until curl -o /dev/null -sIf http://${1}; do \
+          sleep 1 && echo .;
+        done;
+      exit $?
+  - path: /opt/bin/download-k8s-binary
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      K8S_VERSION=$(/usr/bin/etcdctl get /k8s/version) >/dev/null 2>&1 || K8S_VERSION="v1.2.2"
+      mkdir -p /opt/bin
+      FILE=$1
+      if [ ! -f /opt/bin/$FILE ]; then
+        curl -sSL -o /opt/bin/$FILE https://storage.googleapis.com/kubernetes-release/release/${K8S_VERSION}/bin/linux/amd64/$FILE
+        chmod +x /opt/bin/$FILE
+      else
+        # we check the version of the binary
+        INSTALLED_VERSION=$(/opt/bin/$FILE --version)
+        MATCH=$(echo "${INSTALLED_VERSION}" | grep -c "${K8S_VERSION}")
+        if [ $MATCH -eq 0 ]; then
+          # the version is different
+          curl -sSL -o /opt/bin/$FILE https://storage.googleapis.com/kubernetes-release/release/${K8S_VERSION}/bin/linux/amd64/$FILE
+          chmod +x /opt/bin/$FILE
+        fi
+      fi
+  - path: /opt/bin/scheduler-policy.json
+    content: |
+      {
+          "kind": "Policy",
+          "apiVersion": "v1",
+          "predicates": [{"name": "PodFitsPorts"},{"name": "PodFitsResources"},{"name": "NoDiskConflict"},{"name": "MatchNodeSelector"},{"name": "HostName"}],
+          "priorities": [{"name": "LeastRequestedPriority","weight": 1},{"name": "BalancedResourceAllocation","weight": 1},{"name": "ServiceSpreadingPriority","weight": 2},{"name": "EqualPriority","weight": 1}]
+      }
