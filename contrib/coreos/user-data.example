@@ -91,6 +91,7 @@ write_files:
     content: |
       #! /usr/bin/bash
       CALICO_VERSION=$(/usr/bin/etcdctl get /calico/version) >/dev/null 2>&1 || CALICO_VERSION="0.12.0"
+      git clone https://github.com/narwhal-paas/proof-of-concept.git /home/core/infrastructure
       if [ ! -f /opt/bin/calicoctl ]; then
         echo "Calico not installed - installing."
         # Install the `calicoctl` binary

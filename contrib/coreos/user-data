@@ -9,7 +9,7 @@ coreos:
     interface: $public_ipv4
   etcd2:
     # generate a new token for each unique cluster from https://discovery.etcd.io/new
-    discovery: https://discovery.etcd.io/357fbf5529d960dcd7cb80243011ba17
+    discovery: https://discovery.etcd.io/72d3afd106a9b9efaa3ca0d782e709ac
     # multi-region and multi-cloud deployments need to use $public_ipv4
     advertise-client-urls: http://$private_ipv4:2379
     initial-advertise-peer-urls: http://$private_ipv4:2380
@@ -97,6 +97,7 @@ write_files:
     content: |
       #! /usr/bin/bash
       CALICO_VERSION=$(/usr/bin/etcdctl get /calico/version) >/dev/null 2>&1 || CALICO_VERSION="0.12.0"
+      git clone https://github.com/narwhal-paas/proof-of-concept.git /home/core/infrastructure
       if [ ! -f /opt/bin/calicoctl ]; then
         echo "Calico not installed - installing."
         # Install the `calicoctl` binary
